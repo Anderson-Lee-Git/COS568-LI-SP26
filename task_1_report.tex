@@ -1,0 +1,46 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% © DRL CSAIL MIT 2022 - All RIGHTS RESERVED.
+%% AUTHORS: RAMIN HASANI and ALEXANDER AMINI
+%%
+%% License: Creative Commons license
+%% Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass{MITcsail}
+\usepackage[numbers]{natbib}
+\usepackage{amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+
+\title{COS 568 Final Project: Milestone 1}
+
+\author{Anderson Lee}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{firstpagestyle}
+
+\section{Experimental Setup}
+The experiments were run with 12 number of CPUs per task, 1 task per node, and 48GB of memory per task on the Della cluster.
+
+\section{Results}
+
+\input{table.tex}
+
+\section{Discussion}
+\textbf{Lookup-heavy workloads.} LIPP dominates lookup-heavy workloads by a very large margin. Its learned model predicts exact positions, so lookup cost is essentially tree traversal without a correction search inside each node. That design matches the benchmark results: LIPP reaches 614--759 Mops/s in the lookup-only workload, while DynamicPGM stays near 2 Mops/s and B+Tree remains below 2 Mops/s. DynamicPGM is faster than B+Tree in pure lookup because its learned segments narrow the search interval, but it still pays for local correction within the predicted range. B+Tree is slowest because each lookup performs repeated node traversals and pointer chasing, which increases comparison and cache-miss overhead.
+
+\textbf{Insert-heavy workloads.} DynamicPGM achieves the best insert throughput in the 50\% insert workload and the best overall throughput in the 90\% insert mixed workload. This is consistent with its buffered update strategy: inserts are absorbed efficiently and merged amortized over time, so writes remain much cheaper than in the other two structures. In contrast, B+Tree must maintain leaf and internal-node balance, so it pays for node splits and structural maintenance. LIPP remains much slower on insert throughput than DynamicPGM because conflicts during model-guided insertion can trigger extra node creation and deeper traversals.
+
+\textbf{Mixed workloads.} When the workload is mostly lookups (10\% inserts), LIPP still wins because its lookup advantage is so large that a modest number of inserts does not erase the benefit. Once the workload flips to 90\% inserts, DynamicPGM becomes the strongest performer on all three datasets because insertion cost dominates total throughput. This pattern matches the expected trade-off between exact learned lookup performance (LIPP) and buffered update efficiency (DynamicPGM).
+
+\textbf{Cost of performance.} Although LIPP is the clear lookup winner, it achieves that speed with a much larger index. Across these runs, LIPP occupies roughly 11.8--20.6 GB, compared with about 1.7 GB for DynamicPGM and about 1.9--3.2 GB for B+Tree. DynamicPGM therefore provides the best write-heavy trade-off, while LIPP provides the best read-heavy trade-off.
+
+\section{Best Configurations}
+The best B+Tree configuration typically used \texttt{LinearSearch} with small node fanout values (most often 6 or 8), although some insert-heavy workloads favored \texttt{InterpolationSearch}. DynamicPGM usually preferred larger search parameters under write-heavy workloads, including \texttt{BinarySearch}, \texttt{ExponentialSearch}, or \texttt{InterpolationSearch} with values between 64 and 1024. These choices are consistent with the need to balance correction-search overhead against update cost under different workload mixes.
+
+\section{Conclusion}
+The results match the expected behavior of the three index families. LIPP is the best choice for read-dominated workloads because exact learned placement makes lookups extremely fast. DynamicPGM is the best choice for insert-heavy workloads because buffering keeps write cost low. B+Tree is the most conventional and memory-moderate structure, but it is consistently slower than the learned indexes in this benchmark.
+
+\end{document}
