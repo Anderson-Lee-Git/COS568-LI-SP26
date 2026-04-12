@@ -470,6 +470,22 @@ public:
     size_t count(const K &key) const { return find(key) == end() ? 0 : 1; }
 
     /**
+     * Invokes callback(key, value) for every non-deleted entry across all levels.
+     * Entries are visited in an unspecified order (level-by-level, not globally sorted).
+     * Useful for draining / migrating all entries without relying on the sorted iterator.
+     */
+    template<typename F>
+    void for_each(F&& callback) const {
+        for (uint8_t i = min_level; i < used_levels; ++i) {
+            for (const auto& item : get_level(i)) {
+                if (!item.deleted()) {
+                    callback(item.key(), item.value());
+                }
+            }
+        }
+    }
+
+    /**
      * Returns the size of the container in bytes.
      * @return the size of the container in bytes
      */

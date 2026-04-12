@@ -1,0 +1,24 @@
+\begin{table}[h]
+\centering
+\caption{Benchmark results on the Facebook dataset (\texttt{fb\_100M}), 3 runs each.
+  Throughput is the average mixed Mops/s $\pm$ sample standard deviation.
+  Index size is measured at the end of the run.
+  Best hyperparameters selected by highest average throughput per workload.
+  Hybrid uses $\varepsilon{=}128$, flush $1\permil$ for the lookup-heavy workload
+  and $\varepsilon{=}128$, flush $10\permil$ for the insert-heavy workload.}
+\label{tab:results}
+\smallskip
+\begin{tabular}{llrr}
+\toprule
+\textbf{Index} & \textbf{Workload} & \textbf{Throughput (Mops/s)} & \textbf{Index Size (MB)} \\
+\midrule
+DPGM ($\varepsilon{=}64$) & 90\% Lookup, 10\% Insert & $1.089 \pm 0.006$ & 1626 \\
+LIPP & 90\% Lookup, 10\% Insert & \textbf{$12.816 \pm 4.086$} & 12113 \\
+Hybrid ($\varepsilon{=}128$, $1\permil$) & 90\% Lookup, 10\% Insert & $1.246 \pm 0.043$ & 12113 \\
+\midrule
+DPGM ($\varepsilon{=}64$) & 10\% Lookup, 90\% Insert & \textbf{$3.590 \pm 0.021$} & 1626 \\
+LIPP & 10\% Lookup, 90\% Insert & $2.199 \pm 0.029$ & 12070 \\
+Hybrid ($\varepsilon{=}128$, $10\permil$) & 10\% Lookup, 90\% Insert & $2.352 \pm 0.021$ & 12020 \\
+\bottomrule
+\end{tabular}
+\end{table}

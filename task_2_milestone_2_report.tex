@@ -1,0 +1,213 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% © DRL CSAIL MIT 2022 - All RIGHTS RESERVED.
+%% AUTHORS: RAMIN HASANI and ALEXANDER AMINI
+%%
+%% License: Creative Commons license
+%% Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass{MITcsail}
+\usepackage[numbers]{natbib}
+\usepackage{amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{textcomp}   % \textperthousand
+\usepackage{amsmath}
+
+\newcommand{\permil}{\textperthousand}
+
+\title{COS 568 Final Project: Task 2, Milestone 2}
+
+\author{Anderson Lee}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{firstpagestyle}
+
+%------------------------------------------------------------------
+\section{Experimental Setup}
+%------------------------------------------------------------------
+Experiments were run on the Della cluster with 12 CPUs per task, 1 task per
+node, and 64\,GB of memory per task.  All benchmarks used the Facebook dataset
+(\texttt{fb\_100M\_public\_uint64}) with two mixed workloads: a
+\emph{lookup-heavy} mix (10\% inserts, 90\% lookups) and an
+\emph{insert-heavy} mix (90\% inserts, 10\% lookups).  Each configuration was
+repeated $r{=}3$ times; throughput figures are averages of those three runs.
+
+%------------------------------------------------------------------
+\section{Hybrid Design}
+%------------------------------------------------------------------
+The hybrid index combines \textbf{LIPP} as a read-optimised main store with
+\textbf{Dynamic PGM (DPGM)} as a write-absorbing insertion buffer.
+
+\paragraph{Build phase.}
+The initial (bulk-loaded) dataset is loaded entirely into LIPP via
+\texttt{bulk\_load}.  DPGM starts empty.
+
+\paragraph{Insert.}
+Every new key--value pair is inserted into DPGM.  After each insert, the
+hybrid checks whether DPGM has accumulated
+$\lfloor N_0 \times t / 1000 \rfloor$ keys, where $N_0$ is the initial key
+count and $t$ is the \texttt{flush\_threshold\_per\_mille} template
+parameter.  When the threshold is reached, a synchronous \emph{flush}
+drains all DPGM entries individually into LIPP and resets DPGM to an empty
+state.
+
+\paragraph{Lookup.}
+Equality lookups probe DPGM first (the buffer is typically small), then fall
+back to LIPP on a miss.
+
+\paragraph{Why per-mille thresholds.}
+With $N_0 = 100\text{M}$ initial keys and a 2\,M-operation workload
+containing at most 1.8\,M inserts, using integer \emph{percent} thresholds
+would set the minimum flush trigger at 1\,M keys---meaning the lookup-heavy
+workload (only $\sim$200\,k inserts) would \emph{never} flush.  Per-mille
+(‰) thresholds keep the same template-parameter name visible in CSV
+variants while allowing realistic triggers (e.g.\ $2\permil \times 100\text{M}
+= 200\text{k}$ keys).
+
+%------------------------------------------------------------------
+\section{Implementation Notes}
+%------------------------------------------------------------------
+\paragraph{Naive synchronous flush.}
+Rather than migrating data asynchronously (Milestone~3), this implementation
+performs a blocking flush: the \texttt{Flush()} method iterates over all
+DPGM entries via \texttt{for\_each} and inserts each key individually into
+LIPP.  This is correct and simple, but it blocks all operations for the
+duration of the flush.
+
+\paragraph{LIPP does not support bulk re-insertion.}
+After its initial \texttt{bulk\_load}, LIPP accepts new keys only via its
+single-key \texttt{insert} interface.  Flushing therefore must iterate one
+key at a time; there is no faster batch path available.
+
+\paragraph{Ordered vs.\ unordered traversal.}
+The flush uses DPGM's \texttt{for\_each} (level-by-level, unordered)
+rather than the sorted iterator, because insertion order into LIPP does not
+affect correctness and the sorted path exposed a bug in earlier iterator
+versions.
+
+%------------------------------------------------------------------
+\section{Hyperparameter Selection}
+%------------------------------------------------------------------
+
+\paragraph{DPGM error $\varepsilon$.}
+On the Facebook mixed workloads, three values of the PGM error parameter
+$\varepsilon \in \{64, 128, 256\}$ were evaluated.  For both workloads,
+$\varepsilon{=}64$ achieved the highest average throughput
+(Table~\ref{tab:results}):
+$1.089$\,Mops/s on the lookup-heavy workload and $3.590$\,Mops/s on the
+insert-heavy workload.  Smaller $\varepsilon$ tightens the prediction interval,
+reducing the local search window and improving lookup speed; the insert cost
+increase is marginal.
+
+\paragraph{Hybrid flush threshold.}
+Three threshold candidates were evaluated per workload (see
+Table~\ref{tab:results}).
+
+\begin{itemize}
+  \item \emph{Lookup-heavy (10\% inserts, $\sim$200\,k total inserts).}
+    A threshold of $1\permil$ (100\,k keys) triggers roughly two flushes
+    during the workload.  This keeps the DPGM buffer small almost always,
+    so most lookups land in LIPP directly with full learned-model speed.
+    The best average throughput was $1.246$\,Mops/s at
+    $(\varepsilon{=}128,\; t{=}1\permil)$.
+
+  \item \emph{Insert-heavy (90\% inserts, $\sim$1.8\,M total inserts).}
+    A threshold of $10\permil$ (1\,M keys) triggers approximately one to
+    two flushes.  Infrequent flushing keeps the amortised flush cost
+    per-insert low, while the buffer remains manageable in size.
+    The best average throughput was $2.352$\,Mops/s at
+    $(\varepsilon{=}128,\; t{=}10\permil)$.
+\end{itemize}
+
+Notably, the best hybrid $\varepsilon$ is 128 rather than 64.  When DPGM
+acts as a small buffer (and is frequently reset), the marginal benefit of a
+tighter search window is smaller, while a coarser $\varepsilon$ reduces the
+number of model segments and speeds up DPGM inserts.
+
+%------------------------------------------------------------------
+\section{Results}
+%------------------------------------------------------------------
+
+\input{table_m2}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{analysis_results/hybrid_10pct_insert_90pct_lookup.png}
+  \caption{Lookup-heavy workload (10\% insert, 90\% lookup) on Facebook.
+           Left: mixed throughput (Mops/s). Right: index size (MB).}
+  \label{fig:lookup-heavy}
+\end{figure}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=\linewidth]{analysis_results/hybrid_90pct_insert_10pct_lookup.png}
+  \caption{Insert-heavy workload (90\% insert, 10\% lookup) on Facebook.
+           Left: mixed throughput (Mops/s). Right: index size (MB).}
+  \label{fig:insert-heavy}
+\end{figure}
+
+%------------------------------------------------------------------
+\section{Analysis and Discussion}
+%------------------------------------------------------------------
+
+\paragraph{Lookup-heavy workload.}
+LIPP records the highest \emph{average} throughput at $12.816$\,Mops/s, but
+the result comes with an extraordinary standard deviation of
+$\pm 4.086$\,Mops/s (coefficient of variation $\approx 32\%$).  The three
+individual runs measured $16.54$, $8.44$, and $13.47$\,Mops/s---a nearly
+$2\times$ spread.  Because the LIPP structure occupies $\sim$12\,GB, it far
+exceeds the processor's last-level cache; throughput is therefore highly
+sensitive to the state of the OS page cache and memory-bandwidth competition
+from co-scheduled jobs on the shared Della cluster.  DPGM ($1.089$\,Mops/s)
+and the Hybrid ($1.246$\,Mops/s) are both compact enough that their working
+sets fit comfortably in memory, yielding stable and consistent measurements.
+The Hybrid outperforms standalone DPGM by $\approx 14\%$: although 90\% of
+operations are lookups, most lookups reach the fast LIPP model directly
+because the DPGM buffer is flushed frequently and kept very small.
+
+\paragraph{Insert-heavy workload.}
+DPGM leads at $3.590$\,Mops/s because its buffered update strategy absorbs
+inserts cheaply.  LIPP drops to $2.199$\,Mops/s---each new key may trigger
+conflict resolution and structural rearrangement.  The Hybrid achieves
+$2.352$\,Mops/s, beating LIPP by $\approx 7\%$ while falling well short of
+pure DPGM.  DPGM's buffer absorbs inserts efficiently, but frequent flushes
+(each requiring individual LIPP inserts) impose synchronous pauses that erode
+throughput relative to unbuffered DPGM.  Increasing the flush threshold from
+$5\permil$ to $10\permil$ helps (fewer but larger flush events), but the
+blocking nature of each flush remains the primary bottleneck.
+
+\paragraph{Index size.}
+DPGM is by far the most compact structure at $\sim$1\,626\,MB.  LIPP and
+the Hybrid are both $\sim$12\,000--12\,100\,MB.  The Hybrid's size is
+nearly identical to LIPP's because LIPP stores all $100\text{M}$ initial
+keys plus the flushed inserts, and the residual DPGM buffer (reset after
+each flush) is negligible.  There is no size advantage to using the Hybrid
+over LIPP alone; the Hybrid's value proposition is purely in write
+throughput on insert-heavy workloads.
+
+\paragraph{Bottleneck of the naive approach.}
+The core limitation of Milestone~2's design is that \texttt{Flush()} is
+synchronous: while flushing, no inserts or lookups can proceed.  For
+1\,M-key flushes on an insert-heavy workload, each flush is a large
+blocking pause.  This motivates an asynchronous, double-buffered design
+in Milestone~3, where a background thread migrates DPGM entries to LIPP
+while the foreground continues accepting requests into a second DPGM buffer.
+
+%------------------------------------------------------------------
+\section{Conclusion}
+%------------------------------------------------------------------
+The naive Hybrid DPGM + LIPP index behaves as expected on the insert-heavy
+workload: it outperforms standalone LIPP by $\approx 7\%$ ($2.352$ vs.
+$2.199$\,Mops/s) while remaining below the DPGM baseline.  On the
+lookup-heavy workload, LIPP's \emph{average} throughput dominates at
+$12.816$\,Mops/s, but the measurement is unreliable (std $= 4.086$\,Mops/s)
+due to the structure's large 12\,GB memory footprint interacting with OS page
+cache state.  The Hybrid ($1.246$\,Mops/s) is $\approx 14\%$ faster than
+standalone DPGM ($1.089$\,Mops/s) on the same workload.  The synchronous flush
+is the primary performance ceiling for the insert-heavy case; removing it via
+an asynchronous double-buffer scheme is the natural next step.
+
+\end{document}
