@@ -5,7 +5,11 @@ if(UNIX AND NOT APPLE)
     set(LINUX TRUE)
 endif()
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math -Wall -Wfatal-errors -march=native")
+option(TLI_ENABLE_MARCH_NATIVE "Build with -march=native" ON)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffast-math -Wall -Wfatal-errors")
+if (TLI_ENABLE_MARCH_NATIVE)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+endif()
 
 # Enable OpenMP if available
 include(CheckCXXCompilerFlag)
@@ -28,13 +32,16 @@ endif ()
 
 set(SOURCE_FILES util.h)
 
-# We only include what we need for DynamicPGM, B+Tree
+# We only include the indexes used by the final mixed-workload benchmark.
 set(BENCH_SOURCES
     "benchmarks/benchmark_dynamic_pgm.cc"
     "benchmarks/benchmark_pgm.cc"
     "benchmarks/benchmark_lipp.cc"
     "benchmarks/benchmark_btree.cc"
-    "benchmarks/benchmark_hybrid_pgm_lipp.cc")
+    "benchmarks/benchmark_hybrid_pgm_lipp.cc"
+    "benchmarks/benchmark_async_hybrid_pgm_lipp.cc"
+    "benchmarks/benchmark_bloom_hybrid_pgm_lipp.cc"
+    "benchmarks/benchmark_bloom_async_hybrid_pgm_lipp.cc")
 
 file(GLOB_RECURSE SEARCH_SOURCES "searches/*.h" "searches/search.cpp")
 

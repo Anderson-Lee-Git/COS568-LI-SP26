@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
-# Run final milestone benchmarks: compare DynamicPGM, LIPP, and HybridPGMLipp
-# on the two mixed workloads (10% insert / 90% insert) for all datasets.
+#SBATCH --job-name=final-benchmark
+#SBATCH --output=final-benchmark.out
+#SBATCH --error=final-benchmark.err
+#SBATCH --time=02:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=64G
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=cl6486@princeton.edu
+#SBATCH --chdir=/scratch/gpfs/KOROLOVA/cl6486/COS568-LI-SP26
+
+# Run final milestone benchmarks: compare LIPP, the synchronous Bloom hybrid,
+# and Bloom async hybrid on the lookup-heavy mixed workload for all datasets.
 #
 # Usage (from the project root):
 #   bash scripts/run_final_benchmark.sh
@@ -9,6 +19,10 @@
 #   1. Data has been downloaded  (scripts/download_dataset.sh)
 #   2. Workloads have been generated (scripts/generate_workloads.sh)
 #   3. Benchmark binary has been built (scripts/build_benchmark.sh)
+
+bash scripts/build_benchmark.sh
+# backup existing results
+mv ./results ./results_backup
 
 set -euo pipefail
 
@@ -31,6 +45,9 @@ INDEXES=(
     DynamicPGM
     LIPP
     HybridPGMLipp
+    # AsyncHybridPGMLipp
+    BloomHybridPGMLipp
+    # BloomAsyncHybridPGMLipp
 )
 
 WORKLOAD_90I="ops_2M_0.000000rq_0.500000nl_0.900000i_0m_mix"
@@ -72,8 +89,8 @@ run_mixed() {
 
 for DATASET in "${DATASETS[@]}"; do
     for INDEX in "${INDEXES[@]}"; do
-        run_mixed "$DATASET" "$WORKLOAD_90I" "$INDEX"
         run_mixed "$DATASET" "$WORKLOAD_10I" "$INDEX"
+        run_mixed "$DATASET" "$WORKLOAD_90I" "$INDEX"
     done
 done
 
@@ -89,7 +106,7 @@ for DATASET in "${DATASETS[@]}"; do
             if head -n 1 "$FILE" | grep -q "index_name"; then
                 sed -i '1d' "$FILE"
             fi
-            sed -i '1s/^/index_name,build_time_ns1,build_time_ns2,build_time_ns3,index_size_bytes,mixed_throughput_mops1,mixed_throughput_mops2,mixed_throughput_mops3,search_method,value\n/' "$FILE"
+            sed -i '1s/^/index_name,build_time_ns1,build_time_ns2,build_time_ns3,index_size_bytes,mixed_throughput_mops1,mixed_throughput_mops2,mixed_throughput_mops3,search_method,value,value2,value3,value4\n/' "$FILE"
             echo "Header set for $FILE"
         else
             echo "WARNING: expected result file not found: $FILE"

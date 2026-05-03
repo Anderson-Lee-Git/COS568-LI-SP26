@@ -1,0 +1,226 @@
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% © DRL CSAIL MIT 2022 - All RIGHTS RESERVED.
+%% AUTHORS: RAMIN HASANI and ALEXANDER AMINI
+%%
+%% License: Creative Commons license
+%% Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\documentclass{MITcsail}
+\usepackage[numbers]{natbib}
+\usepackage{amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{textcomp}   % \textperthousand
+\usepackage{amsmath}
+
+\newcommand{\permil}{\textperthousand}
+
+\title{COS 568 Final Project: Task 2, Milestone 3}
+
+\author{Anderson Lee}
+
+\begin{document}
+
+\maketitle
+\thispagestyle{firstpagestyle}
+
+\section{Overview}
+
+The goal of the final milestone was to improve the Dynamic PGM--LIPP hybrid on
+the two mixed workloads required by the assignment: 10\% insertion / 90\%
+lookup and 90\% insertion / 10\% lookup. Dynamic PGM has much better update
+behavior than LIPP, but LIPP gives the fastest direct lookup path on the
+bulk-loaded data. Our Milestone 2 hybrid inserted new keys into a Dynamic PGM
+buffer and periodically flushed them into LIPP, but every lookup still had to
+pay for a Dynamic PGM probe before falling back to LIPP. This was especially
+bad for negative lookups and for keys that were already in the bulk-loaded
+LIPP index.
+
+Our final design, \textsc{BloomHybridPGMLipp}, keeps the same correctness
+structure but adds a Bloom-filter fast path over the Dynamic PGM buffer. LIPP
+stores the initial bulk-loaded keys. Foreground inserts go to Dynamic PGM and
+are also added to the Bloom filter. During lookup, the Bloom filter decides
+whether the key could be in the Dynamic PGM buffer. If the Bloom test is
+negative, we skip Dynamic PGM and go directly to LIPP; if it is positive, we
+probe Dynamic PGM first and then fall back to LIPP on a miss. This keeps the
+cheap insertion path while removing most unnecessary Dynamic PGM misses.
+
+\section{Implementation}
+
+The implementation is single-threaded and synchronous. We intentionally removed
+the asynchronous flushing machinery explored earlier because it added mutexes,
+snapshot indexes, shared-pointer traffic, and background flush interference to
+the common lookup path. In contrast, the final lookup path is:
+\[
+\text{Bloom check} \rightarrow
+\begin{cases}
+\text{Dynamic PGM lookup, then LIPP fallback}, & \text{if Bloom positive},\\
+\text{LIPP lookup only}, & \text{if Bloom negative}.
+\end{cases}
+\]
+The insert path is deliberately shorter:
+\[
+\text{insert into Dynamic PGM} \rightarrow
+\text{add key to Bloom filter} \rightarrow
+\text{increment buffer count}.
+\]
+If the buffered-key count reaches the configured flush threshold, the same
+foreground thread performs a synchronous migration: it scans every key--value
+pair currently in Dynamic PGM, inserts each pair into LIPP, clears the Dynamic
+PGM buffer, resets the buffered-key count, and rebuilds an empty Bloom filter
+for the next batch. Until that flush happens, new keys are served from Dynamic
+PGM; after the flush, they are served from LIPP. Thus insertion normally avoids
+LIPP's more expensive online insert path while still preserving a simple
+single-owner state transition at flush time.
+
+The Bloom filter uses splitmix64 hashing with double hashing. Its bit vector is
+rounded to a power of two, so each probe can use a bit mask rather than a
+modulo. The core state is only the Dynamic PGM buffer, the Bloom filter, the
+LIPP index, and counters for the initial size, buffered-key count, and flush
+threshold. When the buffered-key count reaches the threshold, the flush loop
+iterates over every Dynamic PGM entry, inserts it into LIPP, resets Dynamic PGM,
+and rebuilds an empty Bloom filter.
+
+The benchmark variant fields are:
+\[
+(\text{search method},\ \epsilon,\ \text{flush threshold } \permil,\ \text{Bloom bits/key},\ \text{Bloom hashes}).
+\]
+Table~\ref{tab:config-search} lists the Bloom-hybrid configurations searched in
+the final benchmark. We swept smaller Bloom filters for lookup-heavy workloads
+because every lookup pays the Bloom-check cost. For insert-heavy workloads, we
+used a focused two-point sweep with larger flush thresholds so most inserts
+could remain in Dynamic PGM during the run.
+
+\section{Experimental Setup}
+
+We evaluated FB, Books, and OSMC on the two required mixed workloads. Each
+workload contains 2M operations, uses no range queries, and uses a 50\%
+negative lookup ratio among lookup operations. Each reported throughput is the
+mean of three runs from the same benchmark session. For indexes with
+hyperparameters, we selected the row with the highest mean mixed throughput.
+The baselines are Dynamic PGM, LIPP, and the Milestone 2 naive hybrid.
+
+\input{analysis_results/final_config_search_table.tex}
+\input{analysis_results/final_hyperparams_table.tex}
+
+\section{Results}
+
+Figure~\ref{fig:fb-results} through Figure~\ref{fig:osmc-results} show the 12
+required plots: throughput and index size for both workloads on all three
+datasets. The Bloom hybrid is the highest-throughput index in all six
+dataset/workload pairs. On the lookup-heavy workload, it slightly exceeds LIPP
+on FB and Books and substantially exceeds LIPP on OSMC. On insert-heavy
+workloads, it is much faster than both LIPP and Dynamic PGM because most
+insertions are absorbed by Dynamic PGM while Bloom gating keeps lookup overhead
+small.
+
+\begin{figure*}[t]
+\centering
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_fb_10pct_insert_90pct_lookup_throughput.png}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_fb_10pct_insert_90pct_lookup_size.png}
+\end{minipage}
+
+\vspace{0.5em}
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_fb_90pct_insert_10pct_lookup_throughput.png}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_fb_90pct_insert_10pct_lookup_size.png}
+\end{minipage}
+\caption{FB results. Top: 10\% insert / 90\% lookup. Bottom: 90\% insert / 10\% lookup.}
+\label{fig:fb-results}
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_books_10pct_insert_90pct_lookup_throughput.png}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_books_10pct_insert_90pct_lookup_size.png}
+\end{minipage}
+
+\vspace{0.5em}
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_books_90pct_insert_10pct_lookup_throughput.png}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_books_90pct_insert_10pct_lookup_size.png}
+\end{minipage}
+\caption{Books results. Top: 10\% insert / 90\% lookup. Bottom: 90\% insert / 10\% lookup.}
+\label{fig:books-results}
+\end{figure*}
+
+\begin{figure*}[t]
+\centering
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_osmc_10pct_insert_90pct_lookup_throughput.png}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_osmc_10pct_insert_90pct_lookup_size.png}
+\end{minipage}
+
+\vspace{0.5em}
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_osmc_90pct_insert_10pct_lookup_throughput.png}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\textwidth}
+\centering
+\includegraphics[width=\linewidth]{analysis_results/final_osmc_90pct_insert_10pct_lookup_size.png}
+\end{minipage}
+\caption{OSMC results. Top: 10\% insert / 90\% lookup. Bottom: 90\% insert / 10\% lookup.}
+\label{fig:osmc-results}
+\end{figure*}
+
+\section{Discussion and Correctness}
+
+The lookup-heavy result depends on making the hybrid lookup path close to LIPP's
+lookup path. Most negative lookups and bulk-loaded-key lookups are Bloom
+negative, so they avoid Dynamic PGM entirely. Bloom false positives are safe:
+they only cause an extra Dynamic PGM miss before checking LIPP. The filter is
+small enough that this extra check is cheaper than always probing Dynamic PGM,
+which explains why the Bloom hybrid beats the naive hybrid by a large margin.
+The lookup-heavy sweep in Table~\ref{tab:config-search} shows that the best
+settings are not simply the largest Bloom filters. Configurations around
+4 bits/key with 2--3 hashes performed best overall, suggesting that reducing
+per-lookup Bloom work was more important than minimizing false positives.
+
+For insert-heavy workloads, the best configuration uses a 20\permil{} flush
+threshold with $\epsilon=128$ and a 4-bit, 3-hash Bloom filter. This keeps
+foreground insertions in Dynamic PGM for most of the 2M-operation workload and
+avoids repeated expensive LIPP insertions. The 10\permil{} insert-heavy setting
+was consistently worse, which indicates that flushing too early destroys much of
+the insertion advantage. The memory footprint is still close to LIPP because
+the bulk-loaded keys remain in LIPP; the extra Dynamic PGM and Bloom structures
+are small compared with the LIPP index.
+
+The main correctness invariant is that every inserted key is always either in
+Dynamic PGM or in LIPP. Before a flush, each inserted key is placed in Dynamic
+PGM and added to the Bloom filter. A Bloom filter has no false negatives for
+keys that have been inserted into it, so a lookup for a buffered key will probe
+Dynamic PGM. During a flush, every Dynamic PGM entry is inserted into LIPP
+before Dynamic PGM and the Bloom filter are reset. Therefore, no keys are
+discarded or skipped to improve throughput.
+
+\end{document}
